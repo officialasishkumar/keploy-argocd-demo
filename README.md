@@ -52,9 +52,9 @@ argocd/
 **What goes in `keploy-k8s-proxy.yaml`**: An ArgoCD `Application` resource that points to Keploy's OCI Helm chart (`oci://docker.io/keploy/k8s-proxy-chart`) with your environment-specific values (cluster name, API server URL, ingress URL, service type). See [`argocd/staging/keploy-k8s-proxy.yaml`](argocd/staging/keploy-k8s-proxy.yaml) and [`argocd/production/keploy-k8s-proxy.yaml`](argocd/production/keploy-k8s-proxy.yaml) for ready-to-use templates.
 
 **What you also need (one-time, not in Git)**:
-- A Kubernetes Secret named `keploy-credentials` in the `keploy` namespace containing your access key (obtained from the Keploy UI when you connect a new cluster). This must **never** be committed to Git.
+- A Kubernetes Secret named `keploy-credentials` in the `keploy` namespace containing your access key (obtained from the Keploy UI when you connect a new cluster). This must **never** be committed to Git. Since ArgoCD follows a GitOps model where everything lives in Git, it's important to call this out: the Keploy access key is a secret credential and is the one thing that must be created manually (or via a secrets manager like Sealed Secrets / Vault / External Secrets Operator) outside of your Git repo.
 
-**What you do NOT need to change**: Your existing application manifests and ArgoCD Applications remain untouched. Keploy works alongside your app — it doesn't require any changes to your app's deployment, service, or code.
+**What you do NOT need to change**: Your existing application manifests and ArgoCD Applications remain untouched. Keploy works alongside your app — it doesn't require any changes to your app's deployment, service, or code. Keploy's k8s-proxy uses a Kubernetes MutatingWebhook to automatically inject an eBPF-based agent sidecar into your application pods at runtime. This means no sidecar annotations, no image changes, no code modifications — Keploy is completely non-invasive to your existing deployment pipeline.
 
 ## Repository structure
 
