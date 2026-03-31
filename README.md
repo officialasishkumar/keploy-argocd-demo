@@ -2,9 +2,6 @@
 
 This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to a Kubernetes cluster using **ArgoCD** (GitOps), for both **staging** and **production** environments.
 
-> **"We are using ArgoCD for deployments to Kubernetes cluster. Kindly suggest next steps to proceed."**
->
-> This is the guide for that.
 
 ## How it works
 
