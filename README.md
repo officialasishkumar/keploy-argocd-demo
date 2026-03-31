@@ -219,6 +219,38 @@ In the ArgoCD UI (`https://localhost:8443`), you'll see your applications with t
 
 ---
 
+## Customizing for your application
+
+If you already deploy with ArgoCD, here's what to do to add Keploy:
+
+### What to create (Keploy-specific)
+
+1. **Copy `argocd/<env>/keploy-k8s-proxy.yaml`** into your ArgoCD repo — this is the only ArgoCD Application you need to add for Keploy
+2. **Edit the Helm values** in that file to match your environment:
+   - `keploy.clusterName` — a name for your cluster (shown in the Keploy UI)
+   - `keploy.apiServerUrl` — `https://api.staging.keploy.io` (staging) or `https://api.keploy.io` (production)
+   - `keploy.ingressUrl` — the URL where k8s-proxy will be reachable from the Keploy UI
+   - `service.type` — `NodePort` (dev/VM) or `ClusterIP`/`LoadBalancer` (production with Ingress)
+3. **Create the Kubernetes Secret** (one-time, per cluster, never in Git):
+   ```bash
+   kubectl create namespace keploy
+   kubectl -n keploy create secret generic keploy-credentials \
+     --from-literal=access-key="<YOUR_ACCESS_KEY>"
+   ```
+4. **Apply the ArgoCD Application**: `kubectl apply -f argocd/<env>/keploy-k8s-proxy.yaml`
+
+### What you do NOT need to change
+
+- Your existing application code — no SDK, no annotations, no sidecar config
+- Your existing K8s manifests — no changes to deployments, services, or pods
+- Your existing ArgoCD Applications — Keploy runs alongside, not inside, your app
+
+### Important: never commit secrets
+
+The `keploy-credentials` secret (access key) must be created manually or via a secrets manager (e.g. Sealed Secrets, External Secrets Operator, Vault). It is **not** stored in this repo.
+
+---
+
 ## Making the Keploy UI reachable (VM / Local setup)
 
 The Keploy UI needs to reach the k8s-proxy running in your cluster. There are two approaches:
@@ -309,35 +341,3 @@ The key benefit of ArgoCD is that **Git is the single source of truth**. Here's 
 2. Push — ArgoCD rolls back the cluster state
 
 ArgoCD also **self-heals**: if someone manually deletes a pod or changes a deployment, ArgoCD detects the drift and restores the desired state from Git.
-
----
-
-## Customizing for your application
-
-If you already deploy with ArgoCD, here's what to do to add Keploy:
-
-### What to create (Keploy-specific)
-
-1. **Copy `argocd/<env>/keploy-k8s-proxy.yaml`** into your ArgoCD repo — this is the only ArgoCD Application you need to add for Keploy
-2. **Edit the Helm values** in that file to match your environment:
-   - `keploy.clusterName` — a name for your cluster (shown in the Keploy UI)
-   - `keploy.apiServerUrl` — `https://api.staging.keploy.io` (staging) or `https://api.keploy.io` (production)
-   - `keploy.ingressUrl` — the URL where k8s-proxy will be reachable from the Keploy UI
-   - `service.type` — `NodePort` (dev/VM) or `ClusterIP`/`LoadBalancer` (production with Ingress)
-3. **Create the Kubernetes Secret** (one-time, per cluster, never in Git):
-   ```bash
-   kubectl create namespace keploy
-   kubectl -n keploy create secret generic keploy-credentials \
-     --from-literal=access-key="<YOUR_ACCESS_KEY>"
-   ```
-4. **Apply the ArgoCD Application**: `kubectl apply -f argocd/<env>/keploy-k8s-proxy.yaml`
-
-### What you do NOT need to change
-
-- Your existing application code — no SDK, no annotations, no sidecar config
-- Your existing K8s manifests — no changes to deployments, services, or pods
-- Your existing ArgoCD Applications — Keploy runs alongside, not inside, your app
-
-### Important: never commit secrets
-
-The `keploy-credentials` secret (access key) must be created manually or via a secrets manager (e.g. Sealed Secrets, External Secrets Operator, Vault). It is **not** stored in this repo.
