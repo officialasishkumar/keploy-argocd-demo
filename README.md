@@ -35,6 +35,27 @@ This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to
 
 **Keploy k8s-proxy** is deployed alongside your app via ArgoCD. It uses a MutatingWebhook to inject an eBPF-based sidecar into your application pods, which captures live traffic without code changes. You can then replay that traffic as automated integration tests from the Keploy UI.
 
+## What you need to create for Keploy (ArgoCD)
+
+If you already use ArgoCD to deploy your application, the **only additional file you need to create is the `keploy-k8s-proxy.yaml` ArgoCD Application** — one per environment. This tells ArgoCD to deploy the Keploy k8s-proxy from its OCI Helm chart.
+
+```
+argocd/
+├── staging/
+│   ├── your-app.yaml              # You already have this (your existing app)
+│   └── keploy-k8s-proxy.yaml      # ← CREATE THIS for Keploy
+└── production/
+    ├── your-app.yaml              # You already have this (your existing app)
+    └── keploy-k8s-proxy.yaml      # ← CREATE THIS for Keploy
+```
+
+**What goes in `keploy-k8s-proxy.yaml`**: An ArgoCD `Application` resource that points to Keploy's OCI Helm chart (`oci://docker.io/keploy/k8s-proxy-chart`) with your environment-specific values (cluster name, API server URL, ingress URL, service type). See [`argocd/staging/keploy-k8s-proxy.yaml`](argocd/staging/keploy-k8s-proxy.yaml) and [`argocd/production/keploy-k8s-proxy.yaml`](argocd/production/keploy-k8s-proxy.yaml) for ready-to-use templates.
+
+**What you also need (one-time, not in Git)**:
+- A Kubernetes Secret named `keploy-credentials` in the `keploy` namespace containing your access key (obtained from the Keploy UI when you connect a new cluster). This must **never** be committed to Git.
+
+**What you do NOT need to change**: Your existing application manifests and ArgoCD Applications remain untouched. Keploy works alongside your app — it doesn't require any changes to your app's deployment, service, or code.
+
 ## Repository structure
 
 ```
@@ -56,11 +77,11 @@ This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to
 │
 └── argocd/
     ├── staging/
-    │   ├── sample-order-service.yaml   # ArgoCD app → environments/staging/
-    │   └── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (staging)
+    │   ├── sample-order-service.yaml   # ArgoCD app → environments/staging/ (example)
+    │   └── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (staging) ← KEPLOY-SPECIFIC
     └── production/
-        ├── sample-order-service.yaml   # ArgoCD app → environments/production/
-        └── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (production)
+        ├── sample-order-service.yaml   # ArgoCD app → environments/production/ (example)
+        └── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (production) ← KEPLOY-SPECIFIC
 ```
 
 ### Staging vs Production differences
@@ -287,12 +308,29 @@ ArgoCD also **self-heals**: if someone manually deletes a pod or changes a deplo
 
 ## Customizing for your application
 
-To use this with your own application:
+If you already deploy with ArgoCD, here's what to do to add Keploy:
 
-1. **Replace the sample app** — put your K8s manifests in `environments/staging/` and `environments/production/`
-2. **Update the ArgoCD Application source** — change the `repoURL` and `path` in `argocd/*/sample-order-service.yaml` to point to your repo and manifest path
-3. **Update the ingress URL** — set `keploy.ingressUrl` in `argocd/*/keploy-k8s-proxy.yaml` to where your k8s-proxy will be reachable
-4. **Create the Keploy secret** — each environment needs its own `keploy-credentials` secret with the access key from the Keploy UI
+### What to create (Keploy-specific)
+
+1. **Copy `argocd/<env>/keploy-k8s-proxy.yaml`** into your ArgoCD repo — this is the only ArgoCD Application you need to add for Keploy
+2. **Edit the Helm values** in that file to match your environment:
+   - `keploy.clusterName` — a name for your cluster (shown in the Keploy UI)
+   - `keploy.apiServerUrl` — `https://api.staging.keploy.io` (staging) or `https://api.keploy.io` (production)
+   - `keploy.ingressUrl` — the URL where k8s-proxy will be reachable from the Keploy UI
+   - `service.type` — `NodePort` (dev/VM) or `ClusterIP`/`LoadBalancer` (production with Ingress)
+3. **Create the Kubernetes Secret** (one-time, per cluster, never in Git):
+   ```bash
+   kubectl create namespace keploy
+   kubectl -n keploy create secret generic keploy-credentials \
+     --from-literal=access-key="<YOUR_ACCESS_KEY>"
+   ```
+4. **Apply the ArgoCD Application**: `kubectl apply -f argocd/<env>/keploy-k8s-proxy.yaml`
+
+### What you do NOT need to change
+
+- Your existing application code — no SDK, no annotations, no sidecar config
+- Your existing K8s manifests — no changes to deployments, services, or pods
+- Your existing ArgoCD Applications — Keploy runs alongside, not inside, your app
 
 ### Important: never commit secrets
 
