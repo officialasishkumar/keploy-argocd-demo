@@ -225,19 +225,71 @@ If you already deploy with ArgoCD, here's what to do to add Keploy:
 
 ### What to create (Keploy-specific)
 
-1. **Copy `argocd/<env>/keploy-k8s-proxy.yaml`** into your ArgoCD repo — this is the only ArgoCD Application you need to add for Keploy
-2. **Edit the Helm values** in that file to match your environment:
-   - `keploy.clusterName` — a name for your cluster (shown in the Keploy UI)
-   - `keploy.apiServerUrl` — `https://api.staging.keploy.io` (staging) or `https://api.keploy.io` (production)
-   - `keploy.ingressUrl` — the URL where k8s-proxy will be reachable from the Keploy UI
-   - `service.type` — `NodePort` (dev/VM) or `ClusterIP`/`LoadBalancer` (production with Ingress)
-3. **Create the Kubernetes Secret** (one-time, per cluster, never in Git):
+1. **Create a `keploy-k8s-proxy.yaml` ArgoCD Application** in your ArgoCD repo — this is the only file you need to add for Keploy. Copy this template and fill in the values marked with `<...>`:
+
+   ```yaml
+   apiVersion: argoproj.io/v1alpha1
+   kind: Application
+   metadata:
+     name: keploy-k8s-proxy
+     namespace: argocd
+     finalizers:
+       - resources-finalizer.argocd.argoproj.io
+   spec:
+     project: default
+
+     source:
+       chart: k8s-proxy-chart
+       repoURL: registry-1.docker.io/keploy
+       targetRevision: "3.3.10"                     # Keploy k8s-proxy chart version
+       helm:
+         values: |
+           replicaCount: 1
+           environment: "<staging|production>"       # Your environment name
+           selfHosted: false
+
+           keploy:
+             existingSecret: "keploy-credentials"    # K8s Secret with your access key
+             existingSecretKey: "access-key"
+             clusterName: "<YOUR_CLUSTER_NAME>"      # Shown in the Keploy UI
+             apiServerUrl: "<KEPLOY_API_URL>"        # https://api.staging.keploy.io (staging)
+                                                     # https://api.keploy.io (production)
+             ingressUrl: "<YOUR_INGRESS_URL>"        # URL where k8s-proxy is reachable
+                                                     # e.g. https://proxy.example.com:30080
+
+           service:
+             type: NodePort                          # Use NodePort for dev/VM
+             nodePort: "30080"                       # Or ClusterIP/LoadBalancer for production
+             # For production with Ingress, use:
+             # type: ClusterIP
+
+           mongodb:
+             enabled: false                          # Only needed for self-hosted mode
+           minio:
+             enabled: false                          # Only needed for self-hosted mode
+
+     destination:
+       server: https://kubernetes.default.svc
+       namespace: keploy
+
+     syncPolicy:
+       automated:
+         prune: true
+         selfHeal: true
+       syncOptions:
+         - CreateNamespace=true
+   ```
+
+2. **Create the Kubernetes Secret** (one-time, per cluster, never in Git):
    ```bash
    kubectl create namespace keploy
    kubectl -n keploy create secret generic keploy-credentials \
      --from-literal=access-key="<YOUR_ACCESS_KEY>"
    ```
-4. **Apply the ArgoCD Application**: `kubectl apply -f argocd/<env>/keploy-k8s-proxy.yaml`
+3. **Apply the ArgoCD Application**:
+   ```bash
+   kubectl apply -f keploy-k8s-proxy.yaml
+   ```
 
 ### What you do NOT need to change
 
