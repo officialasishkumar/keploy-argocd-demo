@@ -1,8 +1,8 @@
-# ArgoCD Application - deploys the sample app from this repo's manifests.
+# ArgoCD Application - deploys the sample app to the staging namespace.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: sample-order-service
+  name: sample-order-service-staging
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: https://github.com/officialasishkumar/keploy-argocd-demo.git
     targetRevision: main
-    path: sample-app/k8s
+    path: environments/staging
 
   destination:
     server: https://kubernetes.default.svc

@@ -1,0 +1,58 @@
+# ArgoCD Application - deploys Keploy k8s-proxy to production via OCI Helm chart.
+#
+# Prerequisites (run once, before applying this file):
+#
+#   kubectl create namespace keploy
+#   kubectl -n keploy create secret generic keploy-credentials \
+#     --from-literal=access-key="<YOUR_ACCESS_KEY>"
+#
+# The access key is obtained from the Keploy UI when you create a new cluster.
+# Never commit your access key to Git.
+#
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keploy-k8s-proxy-production
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    chart: k8s-proxy-chart
+    repoURL: registry-1.docker.io/keploy
+    targetRevision: "3.3.10"
+    helm:
+      values: |
+        replicaCount: 2
+        environment: "production"
+        selfHosted: false
+
+        keploy:
+          existingSecret: "keploy-credentials"
+          existingSecretKey: "access-key"
+          clusterName: "production-cluster"
+          apiServerUrl: "https://api.keploy.io"
+          ingressUrl: ""    # Set to your ingress URL, e.g. https://proxy.example.com
+
+        service:
+          type: ClusterIP     # Use Ingress or LoadBalancer in real production
+          # For LoadBalancer, uncomment:
+          # type: LoadBalancer
+
+        mongodb:
+          enabled: false
+        minio:
+          enabled: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keploy
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

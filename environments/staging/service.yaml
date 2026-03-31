@@ -5,6 +5,7 @@ metadata:
   namespace: staging
   labels:
     app: sample-order-service
+    environment: staging
 spec:
   type: ClusterIP
   selector:

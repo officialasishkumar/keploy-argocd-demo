@@ -1,3 +1,5 @@
 *.env
 *.pem
 *.key
+*.secret
+kind-config.yaml

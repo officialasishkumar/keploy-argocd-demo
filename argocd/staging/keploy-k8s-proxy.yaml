@@ -1,14 +1,18 @@
-# ArgoCD Application - deploys the Keploy k8s-proxy via its OCI Helm chart.
+# ArgoCD Application - deploys Keploy k8s-proxy to staging via OCI Helm chart.
 #
-# Prerequisites:
+# Prerequisites (run once, before applying this file):
+#
 #   kubectl create namespace keploy
 #   kubectl -n keploy create secret generic keploy-credentials \
 #     --from-literal=access-key="<YOUR_ACCESS_KEY>"
 #
+# The access key is obtained from the Keploy UI when you create a new cluster.
+# Never commit your access key to Git.
+#
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: keploy-k8s-proxy
+  name: keploy-k8s-proxy-staging
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -18,7 +22,7 @@ spec:
   source:
     chart: k8s-proxy-chart
     repoURL: registry-1.docker.io/keploy
-    targetRevision: "3.2.88"
+    targetRevision: "3.3.10"
     helm:
       values: |
         replicaCount: 1
@@ -30,7 +34,7 @@ spec:
           existingSecretKey: "access-key"
           clusterName: "staging-cluster"
           apiServerUrl: "https://api.staging.keploy.io"
-          ingressUrl: ""
+          ingressUrl: ""    # Set to your ingress URL, e.g. https://proxy.staging.example.com:30080
 
         service:
           type: NodePort
