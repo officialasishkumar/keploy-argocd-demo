@@ -43,7 +43,7 @@ spec:
           # This is the URL the Keploy cloud uses to reach the k8s-proxy.
           # Traffic flows: Keploy cloud -> Envoy (NodePort 30080) -> k8s-proxy
           # Replace with your actual hostname (must match the HTTPProxy fqdn).
-          ingressUrl: "https://<YOUR_INGRESS_HOST>:30080"
+          ingressUrl: "https://asish.kumar.io:30080"
 
         # ClusterIP — external traffic enters via Contour/Envoy HTTPProxy
         service:
