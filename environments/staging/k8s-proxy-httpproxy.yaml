@@ -1,15 +1,20 @@
-# HTTPProxy for Keploy k8s-proxy via Contour.
+# HTTPProxy for Keploy k8s-proxy via Contour (TLS passthrough).
+#
+# WHY TLS PASSTHROUGH?
+# The k8s-proxy serves HTTPS natively on its backend port. Instead of
+# terminating TLS at Envoy and re-encrypting to the backend, we use
+# TLS passthrough — Envoy forwards the encrypted connection directly
+# to the k8s-proxy without inspecting or decrypting it.
 #
 # WHY HTTPProxy instead of a standard Ingress?
-# The k8s-proxy serves HTTPS (TLS) on its backend port. A standard Kubernetes
-# Ingress resource only supports plain HTTP backends. Contour's HTTPProxy CRD
-# lets us set `protocol: tls` so Envoy connects to the k8s-proxy over TLS.
+# Standard Kubernetes Ingress does not support TLS passthrough. Contour's
+# HTTPProxy CRD provides this via `tls.passthrough: true` + `tcpproxy`.
 #
-# This routes traffic arriving at <YOUR_INGRESS_HOST>:30080 through Envoy
-# to the k8s-proxy ClusterIP service on port 8080 (TLS).
-#
-# For VM/local testing, add to /etc/hosts:
-#   <NODE_IP>  <YOUR_INGRESS_HOST>
+# IMPORTANT: TLS passthrough uses Envoy's HTTPS listener (port 443).
+# On a Kind/VM cluster with NodePort, this means traffic arrives on the
+# HTTPS NodePort (e.g. 30443), NOT the HTTP NodePort (30080).
+# If your Kind cluster only maps port 30080, swap the Envoy service ports
+# so the HTTPS listener uses 30080 — see README for instructions.
 #
 apiVersion: projectcontour.io/v1
 kind: HTTPProxy
@@ -23,10 +28,9 @@ spec:
     # Replace with your actual ingress hostname.
     # This must match the host part of keploy.ingressUrl in the k8s-proxy Helm values.
     fqdn: asish.kumar.io
-  routes:
-    - conditions:
-        - prefix: /
-      services:
-        - name: k8s-proxy
-          port: 8080
-          protocol: tls
+    tls:
+      passthrough: true
+  tcpproxy:
+    services:
+      - name: k8s-proxy
+        port: 8080

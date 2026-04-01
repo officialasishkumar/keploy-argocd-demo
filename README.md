@@ -28,6 +28,7 @@ This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to
 │  Namespace: keploy                           │
 │  └── k8s-proxy (records & replays traffic)   │
 │       ← HTTPProxy: <YOUR_INGRESS_HOST>       │
+│         (TLS passthrough)                    │
 │                                              │
 │  Namespace: argocd                           │
 │  └── ArgoCD controllers                      │
@@ -38,39 +39,142 @@ This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to
 
 **Keploy k8s-proxy** is deployed alongside your app via ArgoCD. It uses a MutatingWebhook to inject an eBPF-based sidecar into your application pods, which captures live traffic without code changes. You can then replay that traffic as automated integration tests from the Keploy UI.
 
-**Contour** is a CNCF ingress controller powered by Envoy proxy. It routes external traffic to both the sample app and the k8s-proxy. The k8s-proxy serves HTTPS on its backend, so we use Contour's **HTTPProxy** CRD (which supports `protocol: tls` for TLS backends) instead of a standard Kubernetes Ingress resource.
+**Contour** is a CNCF ingress controller powered by Envoy proxy. It routes external traffic to both the sample app and the k8s-proxy.
 
-## What you need to create for Keploy (ArgoCD)
 
-If you already use ArgoCD to deploy your application, you need:
+## Why Contour needs special config for Keploy k8s-proxy
 
-1. **`keploy-k8s-proxy.yaml`** ArgoCD Application (one per environment) — deploys the k8s-proxy from its OCI Helm chart
-2. **`k8s-proxy-httpproxy.yaml`** — a Contour HTTPProxy to route traffic to the k8s-proxy (TLS backend)
-3. **An ingress controller** — Contour is used here, but any controller that supports TLS backends works
+The k8s-proxy serves **HTTPS (TLS) natively** on its backend port. This means:
+
+1. A standard Kubernetes `Ingress` resource **won't work** — it only supports plain HTTP backends
+2. We need Contour's **HTTPProxy** CRD with **TLS passthrough** — Envoy forwards the encrypted TLS connection directly to the k8s-proxy without terminating or inspecting it
+
+Here's the traffic flow:
 
 ```
-argocd/
-├── staging/
-│   ├── your-app.yaml              # You already have this
-│   └── keploy-k8s-proxy.yaml      # ← CREATE THIS for Keploy
-└── production/
-    ├── your-app.yaml              # You already have this
-    └── keploy-k8s-proxy.yaml      # ← CREATE THIS for Keploy
-
-environments/
-├── staging/
-│   └── k8s-proxy-httpproxy.yaml   # ← CREATE THIS for Contour routing
-└── production/
-    └── k8s-proxy-httpproxy.yaml   # ← CREATE THIS for Contour routing
+Client (Keploy cloud / browser)
+  │
+  │  HTTPS (TLS)
+  ▼
+Envoy (port 443 / NodePort 30080)    ← TLS passthrough, no termination
+  │
+  │  TLS connection forwarded as-is
+  ▼
+k8s-proxy (ClusterIP, port 8080)     ← k8s-proxy terminates TLS itself
 ```
 
-**What you also need (one-time, not in Git)**:
-- A Kubernetes Secret named `keploy-credentials` in the `keploy` namespace containing your access key
-  - The k8s-proxy uses this to authenticate with Keploy's cloud API
-  - Get it from Keploy UI: Clusters → Connect New Cluster → enter cluster name and ingress URL → the UI generates the key
-  - **Never commit this to Git** — create it manually or via a secrets manager (Sealed Secrets, Vault, External Secrets Operator)
+The **HTTPProxy YAML** you need to create for this is at [`environments/staging/k8s-proxy-httpproxy.yaml`](environments/staging/k8s-proxy-httpproxy.yaml):
 
-**What you do NOT need to change**: Your existing application code, K8s manifests, and ArgoCD Applications remain untouched. Keploy is completely non-invasive.
+```yaml
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: k8s-proxy-ingress
+  namespace: keploy
+spec:
+  virtualhost:
+    fqdn: <YOUR_INGRESS_HOST>   # Must match the host in keploy.ingressUrl
+    tls:
+      passthrough: true          # Don't terminate TLS — forward encrypted traffic
+  tcpproxy:
+    services:
+      - name: k8s-proxy
+        port: 8080
+```
+
+The sample-order-service uses a standard `Ingress` (plain HTTP backend) — no special config needed.
+
+
+## What you need to add for Keploy (with Contour)
+
+If you already use ArgoCD + Contour to deploy your application, here's the **complete list of things to add** for Keploy:
+
+### 1. `keploy-k8s-proxy.yaml` — ArgoCD Application (one per environment)
+
+This tells ArgoCD to deploy the k8s-proxy from its OCI Helm chart. Copy from [`argocd/staging/keploy-k8s-proxy.yaml`](argocd/staging/keploy-k8s-proxy.yaml) and fill in your values:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keploy-k8s-proxy
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    chart: k8s-proxy-chart
+    repoURL: registry-1.docker.io/keploy
+    targetRevision: "3.3.10"
+    helm:
+      values: |
+        replicaCount: 1
+        environment: "staging"
+        selfHosted: false
+
+        keploy:
+          existingSecret: "keploy-credentials"
+          existingSecretKey: "access-key"
+          clusterName: "<YOUR_CLUSTER_NAME>"
+          apiServerUrl: "https://api.staging.keploy.io"   # or https://api.keploy.io for prod
+          ingressUrl: "https://<YOUR_INGRESS_HOST>:30080"  # URL where k8s-proxy is reachable
+
+        service:
+          type: ClusterIP    # Routed via Contour, not exposed directly
+
+        mongodb:
+          enabled: false
+        minio:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keploy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+```
+
+### 2. `k8s-proxy-httpproxy.yaml` — Contour HTTPProxy (one per environment)
+
+This creates the TLS passthrough route from Contour/Envoy to the k8s-proxy. Copy from [`environments/staging/k8s-proxy-httpproxy.yaml`](environments/staging/k8s-proxy-httpproxy.yaml):
+
+```yaml
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: k8s-proxy-ingress
+  namespace: keploy
+spec:
+  virtualhost:
+    fqdn: <YOUR_INGRESS_HOST>    # Must match the host in keploy.ingressUrl
+    tls:
+      passthrough: true
+  tcpproxy:
+    services:
+      - name: k8s-proxy
+        port: 8080
+```
+
+### 3. Kubernetes Secret (one-time, never in Git)
+
+```bash
+kubectl create namespace keploy
+kubectl -n keploy create secret generic keploy-credentials \
+  --from-literal=access-key="<YOUR_ACCESS_KEY>"
+```
+
+Get the access key from Keploy UI → Clusters → Connect New Cluster.
+
+### What you do NOT need to change
+
+- Your existing application code — no SDK, no annotations, no sidecar config
+- Your existing K8s manifests — no changes to deployments, services, or pods
+- Your existing ArgoCD Applications — Keploy runs alongside, not inside, your app
+
 
 ## Repository structure
 
@@ -86,31 +190,25 @@ environments/
 │   │   ├── namespace.yaml
 │   │   ├── deployment.yaml              # 2 replicas, lower resources
 │   │   ├── service.yaml
-│   │   ├── ingress.yaml                 # Contour Ingress for the sample app
-│   │   └── k8s-proxy-httpproxy.yaml     # Contour HTTPProxy for k8s-proxy (TLS backend)
+│   │   ├── ingress.yaml                 # Standard Ingress for sample app (HTTP backend)
+│   │   └── k8s-proxy-httpproxy.yaml     # HTTPProxy for k8s-proxy (TLS passthrough)
 │   └── production/
 │       ├── namespace.yaml
 │       ├── deployment.yaml              # 3 replicas, higher resources
 │       ├── service.yaml
-│       ├── ingress.yaml                 # Contour Ingress for the sample app
-│       └── k8s-proxy-httpproxy.yaml     # Contour HTTPProxy for k8s-proxy (TLS backend)
+│       ├── ingress.yaml                 # Standard Ingress for sample app (HTTP backend)
+│       └── k8s-proxy-httpproxy.yaml     # HTTPProxy for k8s-proxy (TLS passthrough)
 │
 └── argocd/
     ├── staging/
     │   ├── sample-order-service.yaml    # ArgoCD app → environments/staging/
-    │   ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart ← KEPLOY-SPECIFIC
-    │   └── contour.yaml                 # Contour deployment instructions
+    │   ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart ← ADD THIS
+    │   └── contour.yaml                 # Contour deployment instructions (not an ArgoCD app)
     └── production/
         ├── sample-order-service.yaml    # ArgoCD app → environments/production/
-        ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart ← KEPLOY-SPECIFIC
-        └── contour.yaml                 # Contour deployment instructions
+        ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart ← ADD THIS
+        └── contour.yaml                 # Contour deployment instructions (not an ArgoCD app)
 ```
-
-### Why HTTPProxy instead of Ingress for k8s-proxy?
-
-The k8s-proxy serves HTTPS (TLS) on its backend port. A standard Kubernetes Ingress resource only supports plain HTTP backends. Contour's [HTTPProxy CRD](https://projectcontour.io/docs/1.30/config/fundamentals/) lets you set `protocol: tls` on a backend service, so Envoy connects to the k8s-proxy over TLS without needing TLS termination at the ingress level.
-
-The sample-order-service uses a standard Ingress (plain HTTP backend), while the k8s-proxy uses an HTTPProxy (TLS backend).
 
 ### Staging vs Production differences
 
@@ -121,8 +219,8 @@ The sample-order-service uses a standard Ingress (plain HTTP backend), while the
 | Memory limit | 128Mi | 256Mi |
 | k8s-proxy replicas | 1 | 2 |
 | Keploy API server | `api.staging.keploy.io` | `api.keploy.io` |
-| Envoy service type | NodePort (30080/30443) | LoadBalancer |
-| k8s-proxy routing | HTTPProxy (TLS backend) | HTTPProxy (TLS backend) |
+| Envoy service type | NodePort | LoadBalancer |
+| k8s-proxy routing | HTTPProxy (TLS passthrough) | HTTPProxy (TLS passthrough) |
 
 ---
 
@@ -150,15 +248,12 @@ nodes:
       - containerPort: 30080
         hostPort: 30080
         protocol: TCP
-      - containerPort: 30443
-        hostPort: 30443
-        protocol: TCP
 EOF
 
 kind create cluster --config kind-config.yaml
 ```
 
-The port mappings expose Contour's Envoy proxy ports (HTTP 30080, HTTPS 30443) on your host machine. All ingress traffic flows through these ports.
+This maps NodePort 30080 on the host. All HTTPS traffic to the k8s-proxy will flow through this port.
 
 ### Step 2: Install ArgoCD
 
@@ -191,24 +286,34 @@ Deploy the official Contour manifests:
 kubectl apply -f https://projectcontour.io/quickstart/contour.yaml
 ```
 
-**For VM / Kind clusters** — patch Envoy to use NodePort so traffic is accessible on host ports:
+Wait for it to be ready:
 
 ```bash
+kubectl -n projectcontour rollout status deployment/contour
+kubectl -n projectcontour rollout status daemonset/envoy
+```
+
+**For Kind / VM clusters** — patch Envoy so the HTTPS listener (needed for TLS passthrough) uses the mapped NodePort 30080:
+
+```bash
+# Swap ports: HTTPS on 30080 (mapped to host), HTTP on 30081
 kubectl patch svc envoy -n projectcontour --type='json' -p='[
   {"op": "replace", "path": "/spec/type", "value": "NodePort"},
-  {"op": "replace", "path": "/spec/ports/0/nodePort", "value": 30080},
-  {"op": "replace", "path": "/spec/ports/1/nodePort", "value": 30443}
+  {"op": "replace", "path": "/spec/ports/0/nodePort", "value": 30081},
+  {"op": "replace", "path": "/spec/ports/1/nodePort", "value": 30080}
 ]'
 ```
 
-**For cloud clusters (EKS/GKE/AKS)** — skip the patch. The default LoadBalancer type is correct.
+> **Why swap the ports?** TLS passthrough uses Envoy's HTTPS listener (port 443 inside the cluster). On Kind, only port 30080 is mapped to the host. By assigning Envoy's HTTPS listener to NodePort 30080, TLS passthrough traffic reaches the host. The HTTP listener moves to 30081 (used by standard Ingress resources for the sample app — optional, only needed if you also map 30081 in Kind).
+
+**For cloud clusters (EKS/GKE/AKS)** — skip the patch. The default LoadBalancer type is correct. HTTPS (443) and HTTP (80) both get external IPs automatically.
 
 Verify:
 
 ```bash
 kubectl get pods -n projectcontour
 kubectl get svc  -n projectcontour
-# Envoy should show NodePort 30080/30443 (VM) or an EXTERNAL-IP (cloud)
+# Should show: 80:30081/TCP,443:30080/TCP (Kind) or EXTERNAL-IP (cloud)
 ```
 
 ### Step 4: Build and load the sample app (Kind only)
@@ -223,23 +328,21 @@ kind load docker-image sample-order-service:latest
 
 ### Step 5: Create the Keploy access key secret
 
-Go to the Keploy UI → **Clusters** → **Connect New Cluster**. Enter a cluster name and ingress URL. You'll get an access key.
+Go to the Keploy UI → **Clusters** → **Connect New Cluster**. Enter your cluster name and ingress URL (e.g. `https://your-host:30080`). You'll get an access key.
 
 Create the secret (**never commit this to Git**):
 
 ```bash
 kubectl create namespace keploy
-
 kubectl -n keploy create secret generic keploy-credentials \
   --from-literal=access-key="<YOUR_ACCESS_KEY>"
 ```
 
 ### Step 6: Apply the HTTPProxy for k8s-proxy
 
-The k8s-proxy serves HTTPS on its backend, so it needs a Contour HTTPProxy (not a standard Ingress):
+Edit the `fqdn` in the file to match your ingress hostname, then apply:
 
 ```bash
-# Edit the fqdn in the file to match your ingress hostname first!
 kubectl apply -f environments/staging/k8s-proxy-httpproxy.yaml
 ```
 
@@ -247,7 +350,7 @@ Verify:
 
 ```bash
 kubectl get httpproxy -A
-# Should show status: valid
+# Should show: status "valid"
 ```
 
 ### Step 7: Deploy with ArgoCD
@@ -276,108 +379,24 @@ kubectl get applications -n argocd
 # Check Contour + Envoy
 kubectl get pods -n projectcontour
 
-# Check Ingress and HTTPProxy resources
-kubectl get ingress -A
+# Check HTTPProxy and Ingress
 kubectl get httpproxy -A
+kubectl get ingress -A
 
-# Check app pods
+# Check pods
 kubectl get pods -n staging
 kubectl get pods -n keploy
 
-# Test sample app through Contour
-curl -H "Host: orders.staging.local" http://localhost:30080/healthz
-# → {"status":"healthy","service":"sample-order-service"}
-
-# Test k8s-proxy through Contour (TLS backend)
-curl -H "Host: <YOUR_INGRESS_HOST>" http://localhost:30080/healthz
+# Test k8s-proxy through Contour (TLS passthrough)
+curl -sk https://<YOUR_INGRESS_HOST>:30080/healthz
 # → {"status":"ok"}
+
+# Test sample app (HTTP, on port 30081 for Kind)
+curl -H "Host: orders.staging.local" http://localhost:30081/healthz
+# → {"status":"healthy","service":"sample-order-service"}
 ```
 
 In the ArgoCD UI (`https://localhost:8443`), you'll see your applications with their sync status and a visual resource tree.
-
----
-
-## Customizing for your application
-
-### Template: keploy-k8s-proxy.yaml (ArgoCD Application)
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: keploy-k8s-proxy
-  namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: default
-
-  source:
-    chart: k8s-proxy-chart
-    repoURL: registry-1.docker.io/keploy
-    targetRevision: "3.3.10"                     # Keploy k8s-proxy chart version
-    helm:
-      values: |
-        replicaCount: 1
-        environment: "<staging|production>"
-        selfHosted: false
-
-        keploy:
-          existingSecret: "keploy-credentials"
-          existingSecretKey: "access-key"
-          clusterName: "<YOUR_CLUSTER_NAME>"      # From Keploy UI
-          apiServerUrl: "<KEPLOY_API_URL>"        # https://api.staging.keploy.io or https://api.keploy.io
-          ingressUrl: "<YOUR_INGRESS_URL>"        # e.g. https://proxy.example.com:30080
-
-        service:
-          type: ClusterIP                         # Routed via Contour HTTPProxy
-
-        mongodb:
-          enabled: false
-        minio:
-          enabled: false
-
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: keploy
-
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-```
-
-### Template: k8s-proxy-httpproxy.yaml (Contour HTTPProxy)
-
-```yaml
-apiVersion: projectcontour.io/v1
-kind: HTTPProxy
-metadata:
-  name: k8s-proxy-ingress
-  namespace: keploy
-spec:
-  virtualhost:
-    fqdn: <YOUR_INGRESS_HOST>     # Must match the host in keploy.ingressUrl
-  routes:
-    - conditions:
-        - prefix: /
-      services:
-        - name: k8s-proxy
-          port: 8080
-          protocol: tls             # k8s-proxy serves HTTPS on its backend
-```
-
-### What you do NOT need to change
-
-- Your existing application code — no SDK, no annotations, no sidecar config
-- Your existing K8s manifests — no changes to deployments, services, or pods
-- Your existing ArgoCD Applications — Keploy runs alongside, not inside, your app
-
-### Important: never commit secrets
-
-The `keploy-credentials` secret (access key) must be created manually or via a secrets manager (e.g. Sealed Secrets, External Secrets Operator, Vault). It is **not** stored in this repo.
 
 ---
 
@@ -415,23 +434,21 @@ Once the k8s-proxy is connected, you can record live traffic and replay it as te
 3. Find your deployment (e.g. `sample-order-service` in `staging`)
 4. Click the **Record** button (red circle icon)
 5. A 3-step wizard opens:
-   - **Step 1 - Pods**: Choose how many pods to record from (slider)
-   - **Step 2 - Record config**: Add filters to include/exclude specific traffic (path regex, HTTP methods, headers). Configure concurrent sampling rate (default: 5) and static dedup
-   - **Step 3 - Auto replay**: Configure automatic replay during recording (interval, noise fields, env overrides)
+   - **Step 1 - Pods**: Choose how many pods to record from
+   - **Step 2 - Record config**: Add filters (path regex, HTTP methods, headers). Configure concurrent sampling rate (default: 5) and static dedup
+   - **Step 3 - Auto replay**: Configure automatic replay during recording
 6. Click **Start Recording**
 7. Send traffic to your application (curl, browser, load test, etc.)
-8. The UI shows recorded endpoints in real-time (method, path, status code)
+8. The UI shows recorded endpoints in real-time
 9. Click **Stop** when done
 
 ### Replaying traffic (running tests)
 
-1. After recording, click the **Replay** button (play icon) next to your deployment
-2. A 2-step wizard opens:
-   - **Step 1 - Select tests**: Choose which test sets to replay
-   - **Step 2 - Configure**: Set API timeout, delay between tests, noise fields, env overrides
+1. After recording, click the **Replay** button next to your deployment
+2. Select test sets and configure (API timeout, noise fields, env overrides)
 3. Click **Start Replay**
-4. The UI shows live progress: passed/failed/noisy counts per test set
-5. When complete, review results
+4. The UI shows live progress: passed/failed/noisy counts
+5. Review results when complete
 
 ### What Keploy does under the hood
 
@@ -452,13 +469,10 @@ Once the k8s-proxy is connected, you can record live traffic and replay it as te
 
 ### Scaling
 
-1. Change `replicas` in the deployment manifest
-2. Push to Git
-3. ArgoCD auto-scales
+1. Change `replicas` in the deployment manifest → push to Git → ArgoCD auto-scales
 
 ### Rollback
 
-1. `git revert` the bad commit
-2. Push — ArgoCD rolls back the cluster state
+1. `git revert` the bad commit → push → ArgoCD rolls back the cluster state
 
-ArgoCD also **self-heals**: if someone manually deletes a pod or changes a deployment, ArgoCD detects the drift and restores the desired state from Git.
+ArgoCD also **self-heals**: if someone manually changes the cluster, ArgoCD restores the desired state from Git.

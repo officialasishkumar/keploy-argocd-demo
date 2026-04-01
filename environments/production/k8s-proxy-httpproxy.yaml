@@ -1,7 +1,10 @@
-# HTTPProxy for Keploy k8s-proxy via Contour (production).
+# HTTPProxy for Keploy k8s-proxy via Contour (TLS passthrough) — production.
 #
-# The k8s-proxy serves HTTPS on its backend, so we use Contour's HTTPProxy
-# CRD with `protocol: tls` instead of a standard Ingress resource.
+# TLS passthrough forwards the encrypted connection directly to the k8s-proxy
+# without terminating TLS at Envoy. The k8s-proxy handles TLS natively.
+#
+# For production (LoadBalancer), TLS passthrough uses port 443 by default.
+# Your DNS should point to the LoadBalancer's external IP.
 #
 apiVersion: projectcontour.io/v1
 kind: HTTPProxy
@@ -14,13 +17,9 @@ spec:
   virtualhost:
     # Replace with your actual production domain.
     fqdn: proxy.example.com
-    # Uncomment for TLS termination at the ingress:
-    # tls:
-    #   secretName: proxy-tls
-  routes:
-    - conditions:
-        - prefix: /
-      services:
-        - name: k8s-proxy
-          port: 8080
-          protocol: tls
+    tls:
+      passthrough: true
+  tcpproxy:
+    services:
+      - name: k8s-proxy
+        port: 8080
