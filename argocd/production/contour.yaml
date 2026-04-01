@@ -1,0 +1,41 @@
+# ArgoCD Application - deploys Contour ingress controller to the cluster (production).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: contour-production
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    chart: contour
+    repoURL: registry-1.docker.io/bitnamicharts
+    targetRevision: "21.1.4"
+    helm:
+      values: |
+        envoy:
+          kind: deployment
+          replicaCount: 2
+          service:
+            # LoadBalancer for cloud environments (EKS/GKE/AKS).
+            # Cloud provider assigns an external IP/DNS automatically.
+            type: LoadBalancer
+
+        contour:
+          ingressClass:
+            name: contour
+            create: true
+            default: true
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: projectcontour
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

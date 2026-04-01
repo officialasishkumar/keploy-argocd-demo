@@ -1,0 +1,27 @@
+# Ingress for sample-order-service via Contour.
+#
+# Routes external HTTP traffic through Envoy to the sample-order-service.
+# For local/VM testing, add to /etc/hosts:
+#   <NODE_IP>  orders.staging.local
+#
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sample-order-service
+  namespace: staging
+  labels:
+    app: sample-order-service
+    environment: staging
+spec:
+  ingressClassName: contour
+  rules:
+    - host: orders.staging.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sample-order-service
+                port:
+                  number: 80

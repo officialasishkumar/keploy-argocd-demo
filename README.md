@@ -17,14 +17,21 @@ This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to
 ┌─────────────────────────────────────────────┐
 │  Kubernetes Cluster                          │
 │                                              │
+│  Namespace: projectcontour                   │
+│  └── Contour + Envoy (ingress controller)    │
+│       ↓ routes traffic via Ingress rules     │
+│                                              │
 │  Namespace: staging                          │
 │  └── sample-order-service (2 replicas)       │
+│       ← Ingress: orders.staging.local        │
 │                                              │
 │  Namespace: production                       │
 │  └── sample-order-service (3 replicas)       │
+│       ← Ingress: orders.example.com          │
 │                                              │
 │  Namespace: keploy                           │
 │  └── k8s-proxy (records & replays traffic)   │
+│       ← Ingress: proxy.staging.local         │
 │                                              │
 │  Namespace: argocd                           │
 │  └── ArgoCD controllers                      │
@@ -75,19 +82,23 @@ argocd/
 │   ├── staging/                   # K8s manifests for staging
 │   │   ├── namespace.yaml
 │   │   ├── deployment.yaml        # 2 replicas, lower resources
-│   │   └── service.yaml
+│   │   ├── service.yaml
+│   │   └── ingress.yaml           # Contour Ingress for the sample app
 │   └── production/                # K8s manifests for production
 │       ├── namespace.yaml
 │       ├── deployment.yaml        # 3 replicas, higher resources
-│       └── service.yaml
+│       ├── service.yaml
+│       └── ingress.yaml           # Contour Ingress for the sample app
 │
 └── argocd/
     ├── staging/
     │   ├── sample-order-service.yaml   # ArgoCD app → environments/staging/ (example)
-    │   └── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (staging) ← KEPLOY-SPECIFIC
+    │   ├── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (staging) ← KEPLOY-SPECIFIC
+    │   └── contour.yaml                # ArgoCD app → Contour ingress controller
     └── production/
         ├── sample-order-service.yaml   # ArgoCD app → environments/production/ (example)
-        └── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (production) ← KEPLOY-SPECIFIC
+        ├── keploy-k8s-proxy.yaml       # ArgoCD app → Keploy Helm chart (production) ← KEPLOY-SPECIFIC
+        └── contour.yaml                # ArgoCD app → Contour ingress controller
 ```
 
 ### Staging vs Production differences
@@ -99,7 +110,8 @@ argocd/
 | Memory limit | 128Mi | 256Mi |
 | k8s-proxy replicas | 1 | 2 |
 | Keploy API server | `api.staging.keploy.io` | `api.keploy.io` |
-| Service type (proxy) | NodePort (30080) | ClusterIP (use Ingress/LB) |
+| Ingress controller | Contour (NodePort 30080/30443) | Contour (LoadBalancer) |
+| k8s-proxy service | ClusterIP + Contour Ingress | ClusterIP + Contour Ingress |
 
 ---
 
@@ -127,12 +139,15 @@ nodes:
       - containerPort: 30080
         hostPort: 30080
         protocol: TCP
+      - containerPort: 30443
+        hostPort: 30443
+        protocol: TCP
 EOF
 
 kind create cluster --config kind-config.yaml
 ```
 
-The port mapping exposes the k8s-proxy NodePort (30080) on your host machine, so the Keploy UI can reach it.
+The port mappings expose Contour's Envoy proxy ports (HTTP 30080, HTTPS 30443) on your host machine. All ingress traffic (k8s-proxy, sample app) flows through these ports.
 
 ### Step 2: Install ArgoCD
 
@@ -182,24 +197,31 @@ kubectl -n keploy create secret generic keploy-credentials \
 
 ### Step 5: Deploy with ArgoCD
 
-**For staging:**
+**Deploy Contour first** (the ingress controller must be ready before other apps create Ingress resources):
+
+```bash
+kubectl apply -f argocd/staging/contour.yaml
+# Wait for Contour to be ready
+kubectl -n projectcontour rollout status deployment/contour-staging-contour
+kubectl -n projectcontour rollout status deployment/contour-staging-envoy
+```
+
+**Then deploy the apps:**
 
 ```bash
 kubectl apply -f argocd/staging/keploy-k8s-proxy.yaml
 kubectl apply -f argocd/staging/sample-order-service.yaml
 ```
 
-**For production:**
-
-```bash
-kubectl apply -f argocd/production/keploy-k8s-proxy.yaml
-kubectl apply -f argocd/production/sample-order-service.yaml
-```
-
-**For both:**
+**Or deploy everything at once** (ArgoCD will retry until Contour is ready):
 
 ```bash
 kubectl apply -f argocd/staging/
+```
+
+**For production:**
+
+```bash
 kubectl apply -f argocd/production/
 ```
 
@@ -209,13 +231,22 @@ kubectl apply -f argocd/production/
 # Check ArgoCD apps
 kubectl get applications -n argocd
 
-# Check pods
+# Check Contour + Envoy
+kubectl get pods -n projectcontour
+
+# Check Ingress resources
+kubectl get ingress -A
+
+# Check app pods
 kubectl get pods -n staging
 kubectl get pods -n production
 kubectl get pods -n keploy
+
+# Test connectivity (after setting up /etc/hosts)
+curl http://orders.staging.local:30080/healthz
 ```
 
-In the ArgoCD UI (`https://localhost:8443`), you'll see your applications with their sync status and a visual resource tree.
+In the ArgoCD UI (`https://localhost:8443`), you'll see your applications (including Contour) with their sync status and a visual resource tree.
 
 ---
 
@@ -305,31 +336,45 @@ The `keploy-credentials` secret (access key) must be created manually or via a s
 
 ## Making the Keploy UI reachable (VM / Local setup)
 
-The Keploy UI needs to reach the k8s-proxy running in your cluster. There are two approaches:
+The Keploy UI needs to reach the k8s-proxy running in your cluster. Traffic now flows through Contour/Envoy:
 
-### Option A: /etc/hosts + NodePort (simple, for dev/VM)
+```
+Browser / Keploy UI  →  NODE_IP:30080  →  Envoy  →  k8s-proxy (ClusterIP)
+```
+
+### Option A: /etc/hosts + Contour NodePort (simple, for dev/VM)
 
 This is the approach used for staging on a VM.
 
-1. The k8s-proxy is exposed as a NodePort on port 30080
-2. On the machine where you open the browser, add an `/etc/hosts` entry:
+1. Contour's Envoy proxy is exposed as NodePort on port 30080 (HTTP) and 30443 (HTTPS)
+2. The k8s-proxy and sample app are routed through Envoy via host-based Ingress rules
+3. On the machine where you open the browser, add `/etc/hosts` entries:
 
 ```bash
-# Replace with your VM's IP
-sudo sh -c 'echo "192.168.116.129  your-domain.example.io" >> /etc/hosts'
+# Replace with your VM's IP (or 127.0.0.1 for Kind)
+NODE_IP=192.168.116.129
+sudo sh -c "echo '$NODE_IP  proxy.staging.local orders.staging.local' >> /etc/hosts"
 ```
 
-3. When creating the cluster in the Keploy UI, use `https://your-domain.example.io:30080` as the ingress URL
-4. Visit `https://your-domain.example.io:30080` once in Chrome and accept the self-signed certificate (Advanced → Proceed)
-5. You may need to disable Secure DNS in Chrome: `chrome://settings/security` → turn off "Use secure DNS"
+4. When creating the cluster in the Keploy UI, use `http://proxy.staging.local:30080` as the ingress URL
+5. Test connectivity:
 
-### Option B: Ingress / LoadBalancer (production)
+```bash
+# Sample order service
+curl http://orders.staging.local:30080/healthz
+
+# k8s-proxy
+curl -k https://proxy.staging.local:30443/
+```
+
+### Option B: Contour LoadBalancer (production)
 
 For production clusters with a real domain:
 
-1. Set the k8s-proxy service type to `ClusterIP` or `LoadBalancer`
-2. Configure an Ingress (nginx, ALB, etc.) that terminates TLS and routes to the k8s-proxy service
-3. Use the real domain as the `ingressUrl` in the Helm values
+1. The Contour production app (`argocd/production/contour.yaml`) already uses `type: LoadBalancer`
+2. Point your DNS records to the LoadBalancer external IP/hostname
+3. The k8s-proxy Ingress uses `proxy.example.com` — update this to your actual domain
+4. Use the real domain as the `ingressUrl` in the k8s-proxy Helm values
 
 ---
 

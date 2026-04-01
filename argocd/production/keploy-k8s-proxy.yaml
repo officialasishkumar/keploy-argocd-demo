@@ -34,12 +34,25 @@ spec:
           existingSecretKey: "access-key"
           clusterName: "production-cluster"
           apiServerUrl: "https://api.keploy.io"
-          ingressUrl: ""    # Set to your ingress URL, e.g. https://proxy.example.com
+          ingressUrl: "https://proxy.example.com"    # Replace with your actual domain
 
         service:
-          type: ClusterIP     # Use Ingress or LoadBalancer in real production
-          # For LoadBalancer, uncomment:
-          # type: LoadBalancer
+          type: ClusterIP
+
+        # Ingress via Contour. Replace host with your actual domain.
+        ingress:
+          enabled: true
+          className: "contour"
+          hosts:
+            - host: proxy.example.com
+              paths:
+                - path: /
+                  pathType: Prefix
+          # Uncomment for TLS:
+          # tls:
+          #   - secretName: proxy-tls
+          #     hosts:
+          #       - proxy.example.com
 
         mongodb:
           enabled: false

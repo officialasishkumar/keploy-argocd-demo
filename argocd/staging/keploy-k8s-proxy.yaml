@@ -34,11 +34,22 @@ spec:
           existingSecretKey: "access-key"
           clusterName: "staging-cluster"
           apiServerUrl: "https://api.staging.keploy.io"
-          ingressUrl: ""    # Set to your ingress URL, e.g. https://proxy.staging.example.com:30080
+          ingressUrl: "http://proxy.staging.local:30080"
 
+        # ClusterIP — traffic enters via Contour/Envoy ingress
         service:
-          type: NodePort
-          nodePort: "30080"
+          type: ClusterIP
+
+        # Ingress via Contour. Add to /etc/hosts:
+        #   <NODE_IP>  proxy.staging.local
+        ingress:
+          enabled: true
+          className: "contour"
+          hosts:
+            - host: proxy.staging.local
+              paths:
+                - path: /
+                  pathType: Prefix
 
         mongodb:
           enabled: false
