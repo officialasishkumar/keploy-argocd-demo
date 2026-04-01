@@ -1,0 +1,14 @@
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: k8s-proxy-ingress
+  namespace: keploy
+spec:
+  virtualhost:
+    fqdn: <YOUR_INGRESS_HOST>
+    tls:
+      passthrough: true
+  tcpproxy:
+    services:
+      - name: k8s-proxy
+        port: 8080

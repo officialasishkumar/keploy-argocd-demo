@@ -1,6 +1,6 @@
-# Deploying Keploy with ArgoCD on Kubernetes
+# Deploying Keploy with GitOps on Kubernetes
 
-This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to a Kubernetes cluster using **ArgoCD** (GitOps), with **Contour** as the ingress controller, for both **staging** and **production** environments.
+This repo shows how to deploy **Keploy's k8s-proxy** and a sample application to a Kubernetes cluster using **ArgoCD** or **Flux CD** (GitOps), with **Contour** as the ingress controller, for both **staging** and **production** environments.
 
 
 ## How it works
@@ -199,15 +199,25 @@ Get the access key from Keploy UI → Clusters → Connect New Cluster.
 │       ├── ingress.yaml                 # Standard Ingress for sample app (HTTP backend)
 │       └── k8s-proxy-httpproxy.yaml     # HTTPProxy for k8s-proxy (TLS passthrough)
 │
-└── argocd/
+├── argocd/                            # ArgoCD deployment manifests
+│   ├── staging/
+│   │   ├── sample-order-service.yaml    # ArgoCD app → environments/staging/
+│   │   ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart
+│   │   └── contour.yaml                 # Contour deployment instructions
+│   └── production/
+│       ├── sample-order-service.yaml    # ArgoCD app → environments/production/
+│       ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart
+│       └── contour.yaml                 # Contour deployment instructions
+│
+└── flux/                              # Flux CD deployment manifests
     ├── staging/
-    │   ├── sample-order-service.yaml    # ArgoCD app → environments/staging/
-    │   ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart ← ADD THIS
-    │   └── contour.yaml                 # Contour deployment instructions (not an ArgoCD app)
+    │   ├── keploy-source.yaml           # OCI Helm repository for Keploy charts
+    │   ├── keploy-k8s-proxy.yaml        # HelmRelease for k8s-proxy
+    │   └── k8s-proxy-httpproxy.yaml     # Contour HTTPProxy (TLS passthrough)
     └── production/
-        ├── sample-order-service.yaml    # ArgoCD app → environments/production/
-        ├── keploy-k8s-proxy.yaml        # ArgoCD app → Keploy Helm chart ← ADD THIS
-        └── contour.yaml                 # Contour deployment instructions (not an ArgoCD app)
+        ├── keploy-source.yaml           # OCI Helm repository for Keploy charts
+        ├── keploy-k8s-proxy.yaml        # HelmRelease for k8s-proxy
+        └── k8s-proxy-httpproxy.yaml     # Contour HTTPProxy (TLS passthrough)
 ```
 
 ### Staging vs Production differences
@@ -397,6 +407,59 @@ curl -H "Host: orders.staging.local" http://localhost:30081/healthz
 ```
 
 In the ArgoCD UI (`https://localhost:8443`), you'll see your applications with their sync status and a visual resource tree.
+
+---
+
+## Alternative: Deploy with Flux CD
+
+If you use **Flux CD** instead of ArgoCD, the Contour and k8s-proxy configuration is identical — only the GitOps controller changes.
+
+### Step 1: Bootstrap Flux
+
+```bash
+flux bootstrap github \
+  --owner=<YOUR_GITHUB_USERNAME> \
+  --repository=<YOUR_REPO_NAME> \
+  --branch=main \
+  --path=flux/staging \
+  --personal
+```
+
+### Step 2: Create the Keploy secret (same as ArgoCD Step 5)
+
+```bash
+kubectl create namespace keploy
+kubectl -n keploy create secret generic keploy-credentials \
+  --from-literal=access-key="<YOUR_ACCESS_KEY>"
+```
+
+### Step 3: Push the Flux manifests
+
+Edit the placeholder values in `flux/staging/keploy-k8s-proxy.yaml` and `flux/staging/k8s-proxy-httpproxy.yaml`, then push:
+
+```bash
+git add flux/staging/
+git commit -m "Add Keploy k8s-proxy via Flux"
+git push
+```
+
+Flux detects the changes and reconciles:
+
+```bash
+flux reconcile source git flux-system
+flux get helmreleases -n keploy
+kubectl get httpproxy -A
+```
+
+### Step 4: Verify (same as ArgoCD Step 8)
+
+```bash
+kubectl get pods -n keploy
+curl -sk https://<YOUR_INGRESS_HOST>:30080/healthz
+# → {"status":"ok"}
+```
+
+For a detailed walkthrough, see the [Flux CD deployment guide](https://keploy.io/docs/keploy-cloud/gitops-flux) in the Keploy docs.
 
 ---
 
