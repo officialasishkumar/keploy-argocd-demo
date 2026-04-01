@@ -1,0 +1,32 @@
+# HTTPProxy for Keploy k8s-proxy via Contour.
+#
+# WHY HTTPProxy instead of a standard Ingress?
+# The k8s-proxy serves HTTPS (TLS) on its backend port. A standard Kubernetes
+# Ingress resource only supports plain HTTP backends. Contour's HTTPProxy CRD
+# lets us set `protocol: tls` so Envoy connects to the k8s-proxy over TLS.
+#
+# This routes traffic arriving at <YOUR_INGRESS_HOST>:30080 through Envoy
+# to the k8s-proxy ClusterIP service on port 8080 (TLS).
+#
+# For VM/local testing, add to /etc/hosts:
+#   <NODE_IP>  <YOUR_INGRESS_HOST>
+#
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: k8s-proxy-ingress
+  namespace: keploy
+  labels:
+    app: k8s-proxy
+spec:
+  virtualhost:
+    # Replace with your actual ingress hostname.
+    # This must match the host part of keploy.ingressUrl in the k8s-proxy Helm values.
+    fqdn: asish.kumar.io
+  routes:
+    - conditions:
+        - prefix: /
+      services:
+        - name: k8s-proxy
+          port: 8080
+          protocol: tls

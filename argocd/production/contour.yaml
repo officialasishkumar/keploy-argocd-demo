@@ -1,41 +1,16 @@
-# ArgoCD Application - deploys Contour ingress controller to the cluster (production).
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: contour-production
-  namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: default
-
-  source:
-    chart: contour
-    repoURL: registry-1.docker.io/bitnamicharts
-    targetRevision: "21.1.4"
-    helm:
-      values: |
-        envoy:
-          kind: deployment
-          replicaCount: 2
-          service:
-            # LoadBalancer for cloud environments (EKS/GKE/AKS).
-            # Cloud provider assigns an external IP/DNS automatically.
-            type: LoadBalancer
-
-        contour:
-          ingressClass:
-            name: contour
-            create: true
-            default: true
-
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: projectcontour
-
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
+# Contour Ingress Controller - deploy as a prerequisite before other ArgoCD apps.
+#
+# For production / cloud clusters (EKS/GKE/AKS), the default Envoy service
+# type is LoadBalancer — no patching needed. Your cloud provider assigns an
+# external IP or hostname automatically.
+#
+# DEPLOY (run once per cluster):
+#
+#   kubectl apply -f https://projectcontour.io/quickstart/contour.yaml
+#
+# VERIFY:
+#
+#   kubectl get pods -n projectcontour
+#   kubectl get svc  -n projectcontour   # EXTERNAL-IP column shows the LB address
+#
+# Point your DNS records (e.g. proxy.example.com) to the LoadBalancer address.

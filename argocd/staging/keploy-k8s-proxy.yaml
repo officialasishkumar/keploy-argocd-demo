@@ -2,9 +2,15 @@
 #
 # Prerequisites (run once, before applying this file):
 #
-#   kubectl create namespace keploy
-#   kubectl -n keploy create secret generic keploy-credentials \
-#     --from-literal=access-key="<YOUR_ACCESS_KEY>"
+#   1. Deploy Contour (see argocd/staging/contour.yaml for instructions)
+#
+#   2. Create the keploy-credentials secret:
+#      kubectl create namespace keploy
+#      kubectl -n keploy create secret generic keploy-credentials \
+#        --from-literal=access-key="<YOUR_ACCESS_KEY>"
+#
+#   3. Apply the HTTPProxy for k8s-proxy routing:
+#      kubectl apply -f environments/staging/k8s-proxy-httpproxy.yaml
 #
 # The access key is obtained from the Keploy UI when you create a new cluster.
 # Never commit your access key to Git.
@@ -34,22 +40,14 @@ spec:
           existingSecretKey: "access-key"
           clusterName: "staging-cluster"
           apiServerUrl: "https://api.staging.keploy.io"
-          ingressUrl: "http://proxy.staging.local:30080"
+          # This is the URL the Keploy cloud uses to reach the k8s-proxy.
+          # Traffic flows: Keploy cloud -> Envoy (NodePort 30080) -> k8s-proxy
+          # Replace with your actual hostname (must match the HTTPProxy fqdn).
+          ingressUrl: "https://<YOUR_INGRESS_HOST>:30080"
 
-        # ClusterIP — traffic enters via Contour/Envoy ingress
+        # ClusterIP — external traffic enters via Contour/Envoy HTTPProxy
         service:
           type: ClusterIP
-
-        # Ingress via Contour. Add to /etc/hosts:
-        #   <NODE_IP>  proxy.staging.local
-        ingress:
-          enabled: true
-          className: "contour"
-          hosts:
-            - host: proxy.staging.local
-              paths:
-                - path: /
-                  pathType: Prefix
 
         mongodb:
           enabled: false

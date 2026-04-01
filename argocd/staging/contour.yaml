@@ -1,52 +1,31 @@
-# ArgoCD Application - deploys Contour ingress controller to the cluster.
+# Contour Ingress Controller - deploy as a prerequisite before other ArgoCD apps.
 #
 # Contour is a CNCF ingress controller powered by Envoy proxy.
 # It supports standard Kubernetes Ingress resources and its own HTTPProxy CRD
-# for advanced routing (retries, rate limiting, traffic splitting, etc.)
+# for advanced routing (retries, rate limiting, TLS backend passthrough, etc.)
 #
-# Once deployed, any Ingress with `ingressClassName: contour` will be routed
-# through Envoy. The k8s-proxy and sample-order-service both use this.
+# WHY NOT AN ARGOCD APP?
+# The Bitnami Helm chart images are frequently unavailable on Docker Hub.
+# The official Contour project publishes reliable quickstart manifests at
+# https://projectcontour.io/quickstart/contour.yaml — so we deploy those
+# directly and patch Envoy to use NodePort for VM/Kind clusters.
 #
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: contour-staging
-  namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
-spec:
-  project: default
-
-  source:
-    chart: contour
-    repoURL: registry-1.docker.io/bitnamicharts
-    targetRevision: "21.1.4"
-    helm:
-      values: |
-        envoy:
-          kind: deployment
-          replicaCount: 1
-          service:
-            # NodePort for local / VM / Kind clusters.
-            # For cloud (EKS/GKE/AKS), change to LoadBalancer.
-            type: NodePort
-            nodePorts:
-              http: "30080"
-              https: "30443"
-
-        contour:
-          ingressClass:
-            name: contour
-            create: true
-            default: true
-
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: projectcontour
-
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
+# DEPLOY (run once per cluster):
+#
+#   kubectl apply -f https://projectcontour.io/quickstart/contour.yaml
+#
+#   # For VM / Kind clusters: patch Envoy to NodePort 30080/30443
+#   kubectl patch svc envoy -n projectcontour --type='json' -p='[
+#     {"op": "replace", "path": "/spec/type", "value": "NodePort"},
+#     {"op": "replace", "path": "/spec/ports/0/nodePort", "value": 30080},
+#     {"op": "replace", "path": "/spec/ports/1/nodePort", "value": 30443}
+#   ]'
+#
+# VERIFY:
+#
+#   kubectl get pods -n projectcontour
+#   kubectl get svc  -n projectcontour
+#
+# For production / cloud clusters (EKS/GKE/AKS), skip the NodePort patch —
+# the default LoadBalancer type is correct. Your cloud provider assigns an
+# external IP automatically.

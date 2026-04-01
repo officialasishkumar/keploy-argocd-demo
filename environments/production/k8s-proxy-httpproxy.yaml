@@ -1,0 +1,26 @@
+# HTTPProxy for Keploy k8s-proxy via Contour (production).
+#
+# The k8s-proxy serves HTTPS on its backend, so we use Contour's HTTPProxy
+# CRD with `protocol: tls` instead of a standard Ingress resource.
+#
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: k8s-proxy-ingress
+  namespace: keploy
+  labels:
+    app: k8s-proxy
+spec:
+  virtualhost:
+    # Replace with your actual production domain.
+    fqdn: proxy.example.com
+    # Uncomment for TLS termination at the ingress:
+    # tls:
+    #   secretName: proxy-tls
+  routes:
+    - conditions:
+        - prefix: /
+      services:
+        - name: k8s-proxy
+          port: 8080
+          protocol: tls

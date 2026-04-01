@@ -2,9 +2,15 @@
 #
 # Prerequisites (run once, before applying this file):
 #
-#   kubectl create namespace keploy
-#   kubectl -n keploy create secret generic keploy-credentials \
-#     --from-literal=access-key="<YOUR_ACCESS_KEY>"
+#   1. Deploy Contour (see argocd/production/contour.yaml for instructions)
+#
+#   2. Create the keploy-credentials secret:
+#      kubectl create namespace keploy
+#      kubectl -n keploy create secret generic keploy-credentials \
+#        --from-literal=access-key="<YOUR_ACCESS_KEY>"
+#
+#   3. Apply the HTTPProxy for k8s-proxy routing:
+#      kubectl apply -f environments/production/k8s-proxy-httpproxy.yaml
 #
 # The access key is obtained from the Keploy UI when you create a new cluster.
 # Never commit your access key to Git.
@@ -34,25 +40,13 @@ spec:
           existingSecretKey: "access-key"
           clusterName: "production-cluster"
           apiServerUrl: "https://api.keploy.io"
-          ingressUrl: "https://proxy.example.com"    # Replace with your actual domain
+          # Replace with your actual production domain.
+          # Must match the fqdn in environments/production/k8s-proxy-httpproxy.yaml
+          ingressUrl: "https://proxy.example.com"
 
+        # ClusterIP — external traffic enters via Contour/Envoy HTTPProxy
         service:
           type: ClusterIP
-
-        # Ingress via Contour. Replace host with your actual domain.
-        ingress:
-          enabled: true
-          className: "contour"
-          hosts:
-            - host: proxy.example.com
-              paths:
-                - path: /
-                  pathType: Prefix
-          # Uncomment for TLS:
-          # tls:
-          #   - secretName: proxy-tls
-          #     hosts:
-          #       - proxy.example.com
 
         mongodb:
           enabled: false
